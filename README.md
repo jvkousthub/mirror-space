@@ -1,6 +1,6 @@
 # Mirror-Space: Python Edition
 
-Ultra-low-latency screen broadcaster with diff-frame encoding - **now in Python!**
+Ultra-low-latency **multi-viewer** screen broadcaster with diff-frame encoding — **now in Python!**
 
 ## Quick Start (2 Minutes)
 
@@ -17,14 +17,14 @@ pip install -r requirements.txt
 
 ### 2. Run It
 
-**Terminal 1 (Receiver):**
+**Terminal 1 (Broadcaster):**
 ```powershell
-python receiver.py
+python broadcaster.py
 ```
 
-**Terminal 2 (Broadcaster):**
+**Terminal 2 (Receiver — open as many as you like!):**
 ```powershell
-python broadcaster.py 127.0.0.1
+python receiver.py 127.0.0.1
 ```
 
 You should see your screen mirrored instantly!
@@ -44,26 +44,61 @@ Total download: ~100 MB (one-time)
 
 ### Local Testing (Same PC)
 ```powershell
-# Terminal 1
-python receiver.py
+# Terminal 1 — Start the broadcaster
+python broadcaster.py
 
-# Terminal 2
-python broadcaster.py 127.0.0.1
+# Terminal 2 — Connect a receiver
+python receiver.py 127.0.0.1
 ```
 
 ### Network Broadcasting
 ```powershell
-# On viewing PC (find IP with: ipconfig)
-python receiver.py
+# On broadcasting PC (find IP with: ipconfig)
+python broadcaster.py
 
-# On broadcasting PC
-python broadcaster.py 192.168.1.100
+# On each viewing PC
+python receiver.py 192.168.1.10
 ```
 
 ### Custom Port
 ```powershell
-python receiver.py 8888
-python broadcaster.py 192.168.1.100 8888
+python broadcaster.py 8888
+python receiver.py 192.168.1.10 8888
+```
+
+### Named Viewers
+```powershell
+python receiver.py 192.168.1.10 --name "Suraj's Laptop"
+```
+
+## Multi-Viewer Broadcasting
+
+Mirror-Space supports **1→N broadcasting**: one sender, unlimited receivers.
+
+### How It Works
+1. **Broadcaster** starts and opens two UDP ports: a **data port** (default `9999`) and a **control port** (`10000`).
+2. **Receivers** connect by sending a `JOIN` message to the control port.
+3. Broadcaster sends every encoded frame to **all** registered receivers.
+4. Receivers send periodic heartbeats; the broadcaster prunes silent clients after 10 seconds.
+
+### Classroom / Workshop Setup
+```powershell
+# Instructor's PC (e.g., 192.168.1.10)
+python broadcaster.py
+
+# Student PC 1
+python receiver.py 192.168.1.10 --name "Alice"
+
+# Student PC 2
+python receiver.py 192.168.1.10 --name "Bob"
+
+# Student PC 3
+python receiver.py 192.168.1.10 --name "Charlie"
+```
+
+The broadcaster console shows a live dashboard:
+```
+FPS: 29.8 | 3 viewer(s): Alice, Bob, Charlie
 ```
 
 ### Adjust FPS
@@ -78,9 +113,11 @@ TARGET_FPS = 60  # Higher for smoother
 ### In `broadcaster.py`:
 ```python
 TARGET_FPS = 30              # Frames per second
+CLIENT_TIMEOUT = 10.0        # Seconds before pruning a silent viewer
+SHOW_HEATMAP = True          # Toggle heatmap overlay window
 ```
 
-### In `diff_encoder.py` (both files):
+### In `diff_encoder.py`:
 ```python
 DiffFrameEncoder(
     block_size=32,   # Block size (16-64)
@@ -151,13 +188,11 @@ DiffFrameEncoder(block_size=64, threshold=15)
 
 ```
 mirror-space/
-├── broadcaster.py       # Screen capture & UDP sender (180 lines)
-├── receiver.py          # UDP receiver & display (150 lines)
-├── diff_encoder.py      # Diff-frame algorithm (250 lines)
+├── broadcaster.py       # Screen capture, client management & multi-viewer UDP sender
+├── receiver.py          # UDP receiver, registration protocol & display
+├── diff_encoder.py      # Diff-frame encoding/decoding algorithm
 └── requirements.txt     # Python dependencies
 ```
-
-**Total: ~580 lines** of clean, documented Python!
 
 ## Security Note
 
