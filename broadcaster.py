@@ -18,13 +18,15 @@ from diff_encoder import DiffFrameEncoder
 
 DEFAULT_PORT = 9999
 MAX_PACKET_SIZE = 65507  # Max UDP packet size
-FRAGMENT_HEADER_SIZE = 12  # total_packets (4) + packet_index (4) + frame_number (4)
+FRAGMENT_HEADER_SIZE = 8  # total_packets (4) + packet_index (4)
 MAX_UDP_PAYLOAD_SIZE = 1400  # MTU-safe payload to avoid IP fragmentation on LAN/WiFi
-TARGET_FPS = 30
+TARGET_FPS = 15
 FRAME_INTERVAL = 1.0 / TARGET_FPS
 SHOW_HEATMAP = True  # Set to False to disable heatmap overlay
-MAX_CHANGED_BLOCK_RATIO = 0.30  # Fallback to key frame when too many blocks change
-MAX_DIFF_PAYLOAD_RATIO = 0.12  # Fallback to key frame when diff payload gets too large
+MAX_CHANGED_BLOCK_RATIO = 0.35  # Fallback to key frame when too many blocks change
+MAX_DIFF_PAYLOAD_RATIO = 0.25  # Fallback to key frame when diff payload gets too large
+JPEG_QUALITY = 60  # Lower quality reduces packet count and loss on busy scenes
+MAX_STREAM_WIDTH = 1280  # Resize captured frame if screen width is larger than this
 
 
 class UDPBroadcaster:
@@ -41,7 +43,7 @@ class UDPBroadcaster:
         
         print(f"UDP broadcaster initialized to {target_ip}:{port}")
     
-    def send_data(self, data: bytes, frame_number: int) -> bool:
+    def send_data(self, data: bytes) -> bool:
         """Send data with automatic fragmentation"""
         offset = 0
         packet_index = 0
@@ -56,8 +58,8 @@ class UDPBroadcaster:
             chunk_size = min(max_chunk_size, len(data) - offset)
             
             # Create packet with metadata
-            # Format: I=total_packets, I=packet_index, I=frame_number, then data
-            packet = struct.pack('<III', total_packets, packet_index, frame_number)
+            # Format: I=total_packets, I=packet_index, then data
+            packet = struct.pack('<II', total_packets, packet_index)
             packet += data[offset:offset + chunk_size]
             
             try:
@@ -192,6 +194,8 @@ def main():
     print(f"Target FPS: {TARGET_FPS}")
     print(f"Max Changed Block Ratio: {MAX_CHANGED_BLOCK_RATIO:.0%}")
     print(f"Max Diff Payload Ratio: {MAX_DIFF_PAYLOAD_RATIO:.0%}")
+    print(f"JPEG Quality: {JPEG_QUALITY}")
+    print(f"Max Stream Width: {MAX_STREAM_WIDTH}")
     print(f"Heatmap Overlay: {'Enabled' if SHOW_HEATMAP else 'Disabled'}")
     print("Press Ctrl+C to stop...")
     if SHOW_HEATMAP:
@@ -210,6 +214,7 @@ def main():
             threshold=10,
             max_changed_block_ratio=MAX_CHANGED_BLOCK_RATIO,
             max_diff_payload_ratio=MAX_DIFF_PAYLOAD_RATIO,
+            jpeg_quality=JPEG_QUALITY,
         )
         broadcaster = UDPBroadcaster(target_ip, port)
         feedback_receiver = FeedbackReceiver(port + 1)
@@ -240,6 +245,12 @@ def main():
             
             # Capture screen
             frame = capture.capture_frame()
+
+            # Limit stream resolution for high-motion scenes to reduce packet loss.
+            if frame.shape[1] > MAX_STREAM_WIDTH:
+                scale = MAX_STREAM_WIDTH / frame.shape[1]
+                resized_height = max(1, int(frame.shape[0] * scale))
+                frame = cv2.resize(frame, (MAX_STREAM_WIDTH, resized_height), interpolation=cv2.INTER_AREA)
             
             # Encode frame
             encoded_data = encoder.encode(frame, frame_number)
@@ -270,7 +281,7 @@ def main():
                         cv2.namedWindow("Broadcaster Heatmap", cv2.WINDOW_NORMAL)
             
             # Send via UDP
-            if not broadcaster.send_data(encoded_data, frame_number):
+            if not broadcaster.send_data(encoded_data):
                 print("Failed to send frame")
             
             frame_number += 1

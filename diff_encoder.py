@@ -25,11 +25,13 @@ class DiffFrameEncoder:
         threshold: int = 10,
         max_changed_block_ratio: float = 0.30,
         max_diff_payload_ratio: float = 0.12,
+        jpeg_quality: int = 75,
     ):
         self.block_size = block_size
         self.threshold = threshold
         self.max_changed_block_ratio = max_changed_block_ratio
         self.max_diff_payload_ratio = max_diff_payload_ratio
+        self.jpeg_quality = max(30, min(95, jpeg_quality))
         self.previous_frame: Optional[np.ndarray] = None
         self.last_frame_number = 0
         self.key_frame_needed = True
@@ -69,7 +71,7 @@ class DiffFrameEncoder:
         height, width = frame.shape[:2]
         
         # JPEG compress the frame
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
         _, compressed = cv2.imencode('.jpg', frame, encode_param)
         compressed_bytes = compressed.tobytes()
         
