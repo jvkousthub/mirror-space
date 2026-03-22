@@ -27,6 +27,7 @@ MAX_CHANGED_BLOCK_RATIO = 0.35  # Fallback to key frame when too many blocks cha
 MAX_DIFF_PAYLOAD_RATIO = 0.25  # Fallback to key frame when diff payload gets too large
 JPEG_QUALITY = 60  # Lower quality reduces packet count and loss on busy scenes
 MAX_STREAM_WIDTH = 1280  # Resize captured frame if screen width is larger than this
+ENABLE_MOTION_DETECTION = True  # Enable optical flow-based motion encoding
 
 
 class UDPBroadcaster:
@@ -146,16 +147,20 @@ class ScreenCapture:
         self.sct.close()
 
 
-def create_heatmap_overlay(frame: np.ndarray, changed_blocks, block_size: int) -> np.ndarray:
-    """Create a heatmap overlay showing changed blocks"""
+def create_heatmap_overlay(frame: np.ndarray, changed_blocks, motion_blocks, block_size: int) -> np.ndarray:
+    """Create a heatmap overlay showing changed blocks and motion regions"""
     overlay = frame.copy()
     heatmap = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
     
     # Mark changed blocks
     for x, y, w, h in changed_blocks:
+        heatmap[y:y+h, x:x+w] = 128
+    
+    # Mark motion blocks (higher intensity)
+    for x, y, w, h in motion_blocks:
         heatmap[y:y+h, x:x+w] = 255
     
-    # Apply color map (red for changed areas)
+    # Apply color map (blue-green-red for intensity)
     heatmap_colored = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
     
     # Blend with original frame
@@ -172,8 +177,12 @@ def create_heatmap_overlay(frame: np.ndarray, changed_blocks, block_size: int) -
     for x, y, w, h in changed_blocks:
         cv2.rectangle(overlay, (x, y), (x+w, y+h), (0, 255, 0), 2)
     
+    # Draw rectangles around motion blocks in blue
+    for x, y, w, h in motion_blocks:
+        cv2.rectangle(overlay, (x, y), (x+w, y+h), (255, 0, 0), 2)
+    
     # Add statistics
-    text = f"Changed Blocks: {len(changed_blocks)}"
+    text = f"Changed: {len(changed_blocks)}, Motion: {len(motion_blocks)}"
     cv2.putText(overlay, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
                 1, (0, 255, 0), 2, cv2.LINE_AA)
     
@@ -196,6 +205,7 @@ def main():
     print(f"Max Diff Payload Ratio: {MAX_DIFF_PAYLOAD_RATIO:.0%}")
     print(f"JPEG Quality: {JPEG_QUALITY}")
     print(f"Max Stream Width: {MAX_STREAM_WIDTH}")
+    print(f"Motion Detection: {'Enabled' if ENABLE_MOTION_DETECTION else 'Disabled'}")
     print(f"Heatmap Overlay: {'Enabled' if SHOW_HEATMAP else 'Disabled'}")
     print("Press Ctrl+C to stop...")
     if SHOW_HEATMAP:
@@ -215,6 +225,7 @@ def main():
             max_changed_block_ratio=MAX_CHANGED_BLOCK_RATIO,
             max_diff_payload_ratio=MAX_DIFF_PAYLOAD_RATIO,
             jpeg_quality=JPEG_QUALITY,
+            enable_motion_detection=ENABLE_MOTION_DETECTION,
         )
         broadcaster = UDPBroadcaster(target_ip, port)
         feedback_receiver = FeedbackReceiver(port + 1)
@@ -258,7 +269,8 @@ def main():
             # Show heatmap if enabled
             if heatmap_enabled:
                 changed_blocks = encoder.get_changed_block_positions()
-                heatmap = create_heatmap_overlay(frame, changed_blocks, encoder.block_size)
+                motion_blocks = encoder.motion_blocks
+                heatmap = create_heatmap_overlay(frame, changed_blocks, motion_blocks, encoder.block_size)
                 
                 # Resize for display if too large
                 display_height = 720
