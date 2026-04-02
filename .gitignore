@@ -60,6 +60,14 @@ receiver.exe
 # Logs
 *.log
 
+# LaTeX build artifacts
+*.aux
+*.toc
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
 # OS files
 .DS_Store
 Thumbs.db

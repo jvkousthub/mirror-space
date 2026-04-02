@@ -1,230 +1,97 @@
-# Architecture Overview
+# Mirror-Space Architecture
 
-## System Architecture
+## Overview
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    BROADCASTER (Sender)                      │
-├─────────────────────────────────────────────────────────────┤
-│                                                               │
-│  ┌──────────────┐    ┌──────────────┐   ┌──────────────┐   │
-│  │Screen Capture│───▶│Diff Encoder  │──▶│UDP Broadcaster│   │
-│  │  (GDI API)   │    │ (Block-based)│   │  (Fragments)  │──┐│
-│  └──────────────┘    └──────────────┘   └──────────────┘  ││
-│         │                    │                              ││
-│         │                    │                              ││
-│    Captures at          Compares with                       ││
-│    30 FPS              previous frame                       ││
-│                                                              ││
-└──────────────────────────────────────────────────────────────┘│
-                                                                │
-                         UDP Network (Port 9999)               │
-                                                                │
-┌──────────────────────────────────────────────────────────────┘
-│
-│  ┌─────────────────────────────────────────────────────────┐
-│  │                   RECEIVER (Viewer)                      │
-│  ├─────────────────────────────────────────────────────────┤
-│  │                                                           │
-│  │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐│
-└─▶│UDP Receiver   │──▶│Diff Decoder  │──▶│Display       ││
-   │ (Reassemble)  │   │(Apply patches│   │(OpenCV)      ││
-   └──────────────┘   └──────────────┘   └──────────────┘│
-                                                           │
-   └─────────────────────────────────────────────────────────┘
-```
+Mirror-Space is a Python LAN screen broadcasting system optimized for low end-to-end latency. It uses UDP transport, differential/motion encoding, adaptive quality control, and feedback-driven recovery.
 
-## Data Flow
+## High-Level Pipeline
 
-### 1. Screen Capture (ScreenCapture.cpp)
-- Uses Windows GDI `BitBlt()` to capture screen
-- Converts to OpenCV Mat (BGR format)
-- Runs at 30 FPS (configurable)
+1. Capture source frame (full screen / region / selected window)
+2. Encode as full, key, diff, or motion frame
+3. Fragment into MTU-safe UDP packets
+4. Fan out to one or many active receivers
+5. Reassemble and decode at receiver
+6. Display frame and report health/latency feedback
 
-### 2. Diff Encoding (DiffFrameEncoder.cpp)
+## Runtime Components
 
-#### Full/Key Frame Mode (Adaptive)
-```
-Input Frame (1920x1080x3) → JPEG Compress → PacketHeader + JPEG Data
-```
+### Broadcaster (`broadcaster.py`)
 
-Key frame triggers:
-- Initial synchronization (startup)
-- High-motion frame (too many changed blocks)
-- Decoder mismatch request from receiver
-- Network instability report from receiver
+- Captures frames from selected source
+- Performs adaptive quality tuning from receiver telemetry
+- Manages access-ID gated receiver authorization
+- Maintains active receiver set for one-to-many fanout
+- Sends key-frame and telemetry responses on feedback channel
 
-#### Diff Frame Mode
-```
-1. Divide frame into 32x32 blocks
-2. For each block:
-   - Calculate MAD vs previous frame
-   - If MAD > threshold:
-     ├─ Store block position (x, y)
-     ├─ Store block size (w, h)
-     └─ Store raw pixel data (w × h × 3 bytes)
-3. Assemble: PacketHeader + DiffBlocks[]
-```
+### Encoder/Decoder (`diff_encoder.py`)
 
-### 3. UDP Transmission (broadcaster.cpp)
+- `FULL_FRAME` / `KEY_FRAME` using JPEG
+- `DIFF_FRAME` block-level updates
+- `MOTION_FRAME` with optical-flow-assisted residual updates
+- Key-frame escalation when diffs become inefficient or unstable
 
-```
-Encoded Data → Fragment into <65KB chunks → Add packet metadata → Send via UDP
-```
+### Receiver (`receiver.py`)
 
-Packet structure:
-```
-[Total Packets: 4B][Packet Index: 4B][Payload: variable]
-```
+- Discovers streams and handles manual selection
+- Reassembles UDP fragments per frame
+- Drops partial frames after strict reassembly timeout
+- Decodes frame stream and renders via OpenCV
+- Reports telemetry (`STREAM_STATS`) and recovery signals
+- Measures `frame_ms` and `rtt_ms` for latency visibility
 
-### 4. UDP Reception (receiver.cpp)
+### Region Selection (`region_selector.py`)
 
-```
-Receive packets → Reassemble by index → Validate completeness → Decode
-```
+- Full screen, specific window, or custom region capture
+- Supports HWND-based capture paths where available
 
-### 5. Frame Reconstruction (DiffFrameEncoder.cpp)
+## Control and Feedback Plane
 
-#### Full Frame
-```
-JPEG Data → cv::imdecode() → Display Frame
-```
+Receiver -> Broadcaster messages:
 
-#### Diff Frame
-```
-For each DiffBlock:
-    CurrentFrame[y:y+h, x:x+w] = BlockPixelData
-Display updated CurrentFrame
-```
+- `RECEIVER_HELLO`: access-ID based authorization
+- `KEYFRAME_REQUEST`: decoder mismatch recovery
+- `NETWORK_UNSTABLE`: packet loss / partial-frame pressure
+- `STREAM_STATS`: receiver FPS, loss, and partial ratios
+- `LATENCY_PING`: RTT probing
 
-## Key Algorithms
+Broadcaster -> Receiver messages:
 
-### Block Change Detection
-```cpp
-bool hasBlockChanged(frame1, frame2, x, y, w, h) {
-    totalDiff = 0
-    for each pixel in block:
-        totalDiff += |R1-R2| + |G1-G2| + |B1-B2|
-    
-    avgDiff = totalDiff / (w × h × 3)
-    return avgDiff > threshold
-}
-```
+- `DISCOVERY_RESPONSE`
+- `LATENCY_PONG`
 
-### Compression Ratio
-```
-CompressionRatio = DiffDataSize / OriginalFrameSize
-```
+## Multi-Receiver Fanout
 
-Typical ratios:
-- Static screen: 0.5-2%
-- Active screen: 10-30%
-- Full motion: 80-100% (switches to keyframe)
+In auto-connect mode, broadcaster tracks authorized receivers and sends each encoded frame to all active targets.
 
-## Performance Optimizations
+- New receivers join by successful `RECEIVER_HELLO` handshake
+- Receiver records are refreshed by control traffic
+- Stale receivers are dropped after timeout
 
-### 1. Block-Based Processing
-- 32x32 blocks reduce comparison overhead
-- Only 3,600 blocks for 1920x1080 (vs 2M pixels)
+This enables one broadcaster to serve multiple viewers concurrently.
 
-### 2. UDP vs TCP
-- No handshake overhead
-- No retransmission delays
-- Acceptable packet loss for video
+## Latency Strategy
 
-### 3. Adaptive Key Frames
-- Triggered by high changed-block ratio
-- Triggered by receiver decoder mismatch feedback
-- Triggered by receiver network instability feedback
-- Prevents drift and speeds up recovery after packet loss
+Key latency controls:
 
-### 4. Multi-Packet Fragmentation
-- Splits large frames
-- Stays within UDP MTU
-- Receiver reassembles
+- MTU-safe packet size to avoid IP fragmentation pressure
+- Moderate socket buffers to reduce queue buildup
+- Tight receiver reassembly window to prevent stale frame drift
+- Adaptive downshift on congestion (FPS/resolution/compression)
+- Key-frame resync on instability and decoder mismatch
 
-## Code Structure
+## Current Repository Layout
 
-```
+```text
 mirror-space/
-├── include/
-│   ├── ScreenCapture.h       # Windows screen capture API
-│   └── DiffFrameEncoder.h    # Diff encoding protocol
-├── src/
-│   ├── ScreenCapture.cpp     # GDI implementation
-│   ├── DiffFrameEncoder.cpp  # Diff algorithm + codec
-│   ├── broadcaster.cpp       # Sender main + UDP broadcaster
-│   └── receiver.cpp          # Receiver main + UDP receiver
-├── CMakeLists.txt            # Build configuration
-└── build.bat                 # Windows build script
+  broadcaster.py
+  receiver.py
+  diff_encoder.py
+  region_selector.py
+  README.md
+  ARCHITECTURE.md
+  COMPARISON.md
+  WELCOME.md
+  requirements.txt
+  docs/
+    MIRROR_SPACE_REPORT.tex
 ```
-
-## Network Protocol Specification
-
-### Packet Types
-```cpp
-enum PacketType {
-    FULL_FRAME = 0,  // Complete JPEG frame
-    DIFF_FRAME = 1,  // Only changed blocks
-    KEY_FRAME = 2    // Reserved for future use
-}
-```
-
-### PacketHeader (Fixed 18 bytes)
-```
-Byte 0:     PacketType (1 byte)
-Byte 1-4:   Frame Number (4 bytes, uint32)
-Byte 5-8:   Width (4 bytes, uint32)
-Byte 9-12:  Height (4 bytes, uint32)
-Byte 13-16: Data Size (4 bytes, uint32)
-Byte 17-18: Block Size (2 bytes, uint16)
-```
-
-### DiffBlock (Variable size)
-```
-Byte 0-1:   X Position (2 bytes, uint16)
-Byte 2-3:   Y Position (2 bytes, uint16)
-Byte 4-5:   Block Width (2 bytes, uint16)
-Byte 6-7:   Block Height (2 bytes, uint16)
-Byte 8+:    Pixel Data (width × height × 3 bytes, RGB)
-```
-
-## Bandwidth Analysis
-
-### Example: 1920×1080 @ 30 FPS
-
-**Full Frame:**
-- Uncompressed: 1920 × 1080 × 3 = 6.2 MB
-- JPEG (85% quality): ~500 KB
-- Frequency: Every 60 frames (2 seconds)
-- Bandwidth: ~2 Mbps
-
-**Diff Frame (10% changed):**
-- Changed blocks: 360 of 3,600
-- Block data: 360 × 32 × 32 × 3 = 11 MB
-- With overhead: ~12 MB
-- Per frame: 400 KB
-- Bandwidth: ~100 Mbps
-
-**Average (typical browsing):**
-- 5% change rate
-- ~5-8 Mbps sustained
-- Peaks at 15 Mbps during motion
-
-## Future Optimizations
-
-1. **Hardware Acceleration**
-   - NVENC for H.264 encoding
-   - Reduces CPU usage by 70%
-
-2. **Prediction Encoding**
-   - Motion vectors for moving blocks
-   - Further 30-50% bandwidth reduction
-
-3. **Adaptive Block Size**
-   - Larger blocks for static areas
-   - Smaller blocks for details
-
-4. **Multi-threaded Encoding**
-   - Parallel block processing
-   - Increase FPS to 60+
