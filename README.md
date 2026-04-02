@@ -24,7 +24,11 @@ python broadcaster.py
 
 **Terminal 2 (Receiver — open as many as you like!):**
 ```powershell
+<<<<<<< HEAD
 python receiver.py 127.0.0.1
+=======
+python broadcaster.py
+>>>>>>> 6a930b68c9c4d532e5121297d6bf1ee08340903c
 ```
 
 You should see your screen mirrored instantly!
@@ -47,21 +51,63 @@ Total download: ~100 MB (one-time)
 # Terminal 1 — Start the broadcaster
 python broadcaster.py
 
+<<<<<<< HEAD
 # Terminal 2 — Connect a receiver
 python receiver.py 127.0.0.1
+=======
+# Terminal 2
+python broadcaster.py
+>>>>>>> 6a930b68c9c4d532e5121297d6bf1ee08340903c
 ```
 
 ### Network Broadcasting
 ```powershell
+<<<<<<< HEAD
 # On broadcasting PC (find IP with: ipconfig)
 python broadcaster.py
 
 # On each viewing PC
 python receiver.py 192.168.1.10
+=======
+# On viewing PC
+python receiver.py
+
+# On broadcasting PC
+python broadcaster.py
+>>>>>>> 6a930b68c9c4d532e5121297d6bf1ee08340903c
 ```
+
+### LAN Auto Discovery (mDNS / Zeroconf)
+
+Receivers now automatically discover broadcasters on your LAN.
+
+Receiver console example:
+
+```text
+Available Streams:
+* Kousthub-PC (192.168.1.23)
+- Lab-System (192.168.1.40)
+```
+
+- `*` marks the currently selected stream.
+- No manual IP entry is required in normal LAN use.
+
+### Connection-Gated Streaming (New)
+
+The broadcaster no longer pushes video immediately in auto-discovery mode.
+
+Flow:
+
+1. Broadcaster starts and advertises "ready" on mDNS.
+2. Receiver discovers available streams and auto-selects one.
+3. Receiver sends a connect hello (`RECEIVER_HELLO`).
+4. Broadcaster logs receiver connection and starts streaming.
+
+This ensures streaming starts only after a receiver has connected.
 
 ### Custom Port
 ```powershell
+<<<<<<< HEAD
 python broadcaster.py 8888
 python receiver.py 192.168.1.10 8888
 ```
@@ -99,6 +145,10 @@ python receiver.py 192.168.1.10 --name "Charlie"
 The broadcaster console shows a live dashboard:
 ```
 FPS: 29.8 | 3 viewer(s): Alice, Bob, Charlie
+=======
+python receiver.py 8888
+python broadcaster.py 255.255.255.255 8888
+>>>>>>> 6a930b68c9c4d532e5121297d6bf1ee08340903c
 ```
 
 ### Adjust FPS
@@ -107,6 +157,69 @@ Edit `broadcaster.py`:
 TARGET_FPS = 20  # Lower for less bandwidth
 TARGET_FPS = 60  # Higher for smoother
 ```
+
+## 🎯 Region-Based Screen Capture (New!)
+
+Capture only the area you need to drastically reduce bandwidth.
+
+### Three Capture Modes
+
+When you run the broadcaster, you'll be prompted to select a capture mode:
+
+1. **Full Screen** - Capture entire display (default)
+2. **Specific Window** - Select and capture a single application window  
+3. **Custom Region** - Click and drag to select any rectangular region
+
+### Quick Test
+
+Test the region selector without starting the broadcaster:
+
+```powershell
+python test_region_selector.py
+```
+
+This will show you:
+- All available modes
+- Preview of the selected region
+- Bandwidth savings analysis
+- Verification that the feature works
+
+### Usage Examples
+
+```powershell
+# Terminal 1 (Receiver)
+python receiver.py
+
+# Terminal 2 (Broadcaster) - will prompt for region selection
+python broadcaster.py
+```
+
+When prompted:
+```
+REGION-BASED SCREEN CAPTURE - SELECT CAPTURE MODE
+1. Full Screen
+2. Specific Window  
+3. Custom Region
+
+Enter your choice (1-3): 3
+```
+
+### Bandwidth Reduction Example
+
+| Capture Mode | Resolution | Bandwidth Savings |
+|-------------|------------|-------------------|
+| Full Screen | 1920x1080 | Baseline (100%) |
+| Half Region | 1280x720 | ~44% reduction |
+| Quarter Region | 960x540 | ~75% reduction |
+| App Window | 1024x768 | ~60% reduction |
+
+### For Detailed Testing
+
+See [REGION_CAPTURE_GUIDE.md](REGION_CAPTURE_GUIDE.md) for:
+- Step-by-step testing procedures
+- Performance benchmarking
+- Troubleshooting guide
+- Bandwidth analysis
 
 ## Configuration
 
@@ -137,6 +250,16 @@ Same performance as C++ version:
 | Desktop idle | 0.5 MB/s | 5% | 35ms |
 | Web browsing | 3 MB/s | 12% | 55ms |
 | Video playback | 12 MB/s | 18% | 85ms |
+
+## Adaptive Key Frames (v1 Upgrade)
+
+The sender now uses a dynamic key-frame strategy instead of fixed "every 60 frames":
+
+- Sends key frame when changed-block ratio is high (high-motion scene)
+- Sends key frame when receiver reports decoder mismatch
+- Sends key frame when receiver reports network instability
+
+This improves stream resilience under packet loss and rapid scene changes.
 
 ## Python vs C++
 
