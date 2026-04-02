@@ -50,6 +50,7 @@ MAX_DIFF_THRESHOLD = 20
 ADAPTIVE_WIDTH_STEPS = [640, 854, 960, 1280, 1600, 1920, 2560]
 INITIAL_STREAM_WIDTH = 1280
 ENABLE_MOTION_DETECTION = True  # Enable optical flow-based motion encoding
+RECEIVER_STALE_SECONDS = 8.0  # Drop inactive receivers in auto-connect mode
 
 
 def get_primary_ipv4() -> str:
@@ -158,14 +159,33 @@ class UDPBroadcaster:
         
         print(f"UDP broadcaster initialized to {target_ip}:{port}")
     
-    def send_data(self, data: bytes, frame_number: int, send_time_ns: Optional[int] = None) -> bool:
+    def send_data(
+        self,
+        data: bytes,
+        frame_number: int,
+        send_time_ns: Optional[int] = None,
+        target_ips: Optional[List[str]] = None,
+    ) -> bool:
         """Send data with automatic fragmentation"""
         offset = 0
         packet_index = 0
+        had_error = False
         timestamp_ns = int(send_time_ns if send_time_ns is not None else time.time_ns())
         max_chunk_size = min(MAX_UDP_PAYLOAD_SIZE, MAX_PACKET_SIZE) - FRAGMENT_HEADER_SIZE
         if max_chunk_size <= 0:
             print("Invalid packet sizing configuration")
+            return False
+
+        recipients = target_ips if target_ips else [self.target_ip]
+        dedup_recipients: List[str] = []
+        seen_recipients: set[str] = set()
+        for ip in recipients:
+            if not ip or ip in seen_recipients:
+                continue
+            dedup_recipients.append(ip)
+            seen_recipients.add(ip)
+        if not dedup_recipients:
+            print("No valid recipient targets")
             return False
 
         total_packets = (len(data) + max_chunk_size - 1) // max_chunk_size
@@ -178,11 +198,12 @@ class UDPBroadcaster:
             packet = struct.pack('<IIIQ', total_packets, packet_index, frame_number, timestamp_ns)
             packet += data[offset:offset + chunk_size]
             
-            try:
-                self.sock.sendto(packet, (self.target_ip, self.port))
-            except Exception as e:
-                print(f"Send failed: {e}")
-                return False
+            for recipient_ip in dedup_recipients:
+                try:
+                    self.sock.sendto(packet, (recipient_ip, self.port))
+                except Exception as e:
+                    had_error = True
+                    print(f"Send failed to {recipient_ip}:{self.port}: {e}")
             
             offset += chunk_size
             packet_index += 1
@@ -191,7 +212,7 @@ class UDPBroadcaster:
             if packet_index < total_packets:
                 time.sleep(0.0001)  # 100 microseconds
         
-        return True
+        return not had_error
     
     def close(self):
         """Close the socket"""
@@ -854,14 +875,14 @@ def main():
         beacon = UdpDiscoveryBeacon(stream_name=stream_name, stream_port=port, feedback_port=port + 1)
 
         auto_connect_mode = target_ip == DEFAULT_BROADCAST_TARGET
-        active_receiver_ip: Optional[str] = None
+        connected_receivers: Dict[str, Dict[str, object]] = {}
         last_wait_log_time = 0.0
         if auto_connect_mode:
             print("\n" + "="*60)
             print("Broadcaster is ready. Waiting for receiver connection...")
             print(f"\n>>> GIVE THIS ACCESS ID TO RECEIVER <<<")
             print(f">>> SESSION ACCESS ID: {access_id} <<<")
-            print(f"\nStreaming will start only after RECEIVER_HELLO is received.")
+            print(f"\nStreaming will start only after at least one RECEIVER_HELLO is received.")
             print("="*60 + "\n")
         
         # Create heatmap window if enabled
@@ -921,20 +942,36 @@ def main():
                         or receiver_name == local_host_name
                     )
 
-                    if active_receiver_ip != sender_ip:
-                        active_receiver_ip = sender_ip
-                        broadcaster.target_ip = "127.0.0.1" if same_host else active_receiver_ip
+                    now = time.time()
+                    stream_target_ip = "127.0.0.1" if same_host else sender_ip
+                    was_new_receiver = sender_ip not in connected_receivers
+                    connected_receivers[sender_ip] = {
+                        "target_ip": stream_target_ip,
+                        "last_seen": now,
+                        "receiver_name": receiver_name or sender_ip,
+                    }
+
+                    if was_new_receiver:
                         print(
-                            f"Receiver connected: {active_receiver_ip}. "
-                            "Starting stream transmission."
+                            "Receiver connected: "
+                            f"{sender_ip} -> stream target {stream_target_ip}. "
+                            f"Active receivers={len(connected_receivers)}"
                         )
-                        if same_host:
-                            print("Connection Debug: same-host receiver detected, using loopback target 127.0.0.1")
+                    else:
+                        print(
+                            f"Receiver heartbeat refreshed: {sender_ip} "
+                            f"(active={len(connected_receivers)})"
+                        )
+
+                    if same_host:
+                        print("Connection Debug: same-host receiver detected, using loopback target 127.0.0.1")
                     continue
 
-                # Ignore health events from non-selected receivers in connect-gated mode.
-                if auto_connect_mode and active_receiver_ip is not None and sender_ip != active_receiver_ip:
-                    continue
+                if auto_connect_mode:
+                    if sender_ip not in connected_receivers:
+                        # Ignore control feedback from non-authorized receivers.
+                        continue
+                    connected_receivers[sender_ip]["last_seen"] = time.time()
 
                 
 
@@ -975,10 +1012,23 @@ def main():
                             f"threshold={adaptive.current_diff_threshold}"
                         )
 
-            if auto_connect_mode and active_receiver_ip is None:
+            if auto_connect_mode:
+                now = time.time()
+                stale_receivers = [
+                    ip for ip, meta in connected_receivers.items()
+                    if now - float(meta.get("last_seen", 0.0)) > RECEIVER_STALE_SECONDS
+                ]
+                for stale_ip in stale_receivers:
+                    connected_receivers.pop(stale_ip, None)
+                    print(
+                        f"Receiver disconnected (stale): {stale_ip}. "
+                        f"Active receivers={len(connected_receivers)}"
+                    )
+
+            if auto_connect_mode and not connected_receivers:
                 now = time.time()
                 if now - last_wait_log_time >= 2.0:
-                    print("Connection Debug: waiting for RECEIVER_HELLO on feedback port")
+                    print("Connection Debug: waiting for receiver connections on feedback port")
                     last_wait_log_time = now
                 time.sleep(0.05)
                 continue
@@ -1023,7 +1073,16 @@ def main():
                         cv2.namedWindow("Broadcaster Heatmap", cv2.WINDOW_NORMAL)
             
             # Send via UDP
-            if not broadcaster.send_data(encoded_data, frame_number=frame_number, send_time_ns=send_time_ns):
+            fanout_targets = None
+            if auto_connect_mode:
+                fanout_targets = [str(meta["target_ip"]) for meta in connected_receivers.values()]
+
+            if not broadcaster.send_data(
+                encoded_data,
+                frame_number=frame_number,
+                send_time_ns=send_time_ns,
+                target_ips=fanout_targets,
+            ):
                 print("Failed to send frame")
             
             frame_number += 1
@@ -1035,7 +1094,8 @@ def main():
                 actual_fps = fps_counter / elapsed
                 print(
                     f"Actual FPS: {actual_fps:.1f} | target={adaptive.current_fps} "
-                    f"width={adaptive.current_width} jpeg={adaptive.current_jpeg_quality}"
+                    f"width={adaptive.current_width} jpeg={adaptive.current_jpeg_quality} "
+                    f"receivers={len(connected_receivers) if auto_connect_mode else 1}"
                 )
                 fps_counter = 0
                 fps_start_time = time.time()

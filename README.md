@@ -75,18 +75,19 @@ Available Streams:
 - `*` marks the currently selected stream.
 - No manual IP entry is required in normal LAN use.
 
-### Connection-Gated Streaming (New)
+### Connection-Gated Streaming + Multi-Receiver Fanout
 
 The broadcaster no longer pushes video immediately in auto-discovery mode.
 
 Flow:
 
 1. Broadcaster starts and advertises "ready" on mDNS.
-2. Receiver discovers available streams and auto-selects one.
-3. Receiver sends a connect hello (`RECEIVER_HELLO`).
-4. Broadcaster logs receiver connection and starts streaming.
+2. Receivers discover available streams and select the same broadcaster.
+3. Each receiver sends a connect hello (`RECEIVER_HELLO`) with the session access ID.
+4. Broadcaster authorizes receivers and fans out every frame to all active receivers.
+5. Inactive receivers are dropped automatically after a timeout.
 
-This ensures streaming starts only after a receiver has connected.
+This ensures streaming starts only after at least one receiver has connected, and then scales to multiple viewers.
 
 ### Custom Port
 ```powershell
@@ -97,8 +98,9 @@ python broadcaster.py 255.255.255.255 8888
 ### Adjust FPS
 Edit `broadcaster.py`:
 ```python
-TARGET_FPS = 20  # Lower for less bandwidth
-TARGET_FPS = 60  # Higher for smoother
+INITIAL_TARGET_FPS = 20  # Starting point
+MIN_STREAM_FPS = 8        # Lower bound during congestion
+MAX_STREAM_FPS = 45       # Upper bound during stable links
 ```
 
 ## 🎯 Region-Based Screen Capture (New!)
